@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 var sessionNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
@@ -59,32 +60,37 @@ type model struct {
 }
 
 var (
-	titleStyle           = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
+	titleStyle           = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff9e64"))
 	rowStyle             = lipgloss.NewStyle().PaddingLeft(1)
-	helpStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	goodStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
-	badStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	selectedWindowStyle  = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("31")).Bold(true)
-	selectedSessionStyle = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("230")).Background(lipgloss.Color("238")).Bold(true)
-	selectedCreateStyle  = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("16")).Background(lipgloss.Color("149")).Bold(true)
-	selectedPlainStyle   = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("16")).Background(lipgloss.Color("252")).Bold(true)
-	matchedWindowStyle   = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("45")).Bold(true)
-	matchedSessionStyle  = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("252")).Bold(true)
-	windowRowStyle       = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("245"))
-	sessionRowStyle      = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("252"))
-	createRowStyle       = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("149"))
-	plainRowStyle        = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("249"))
-	previewHeaderStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("45"))
-	previewMetaStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
-	previewLabelStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-	previewMutedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
+	helpStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("#7c829d"))
+	goodStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("#9ece6a"))
+	badStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("#f7768e"))
+	selectedWindowStyle  = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("#0f111a")).Background(lipgloss.Color("#7aa2f7")).Bold(true)
+	selectedSessionStyle = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("#0f111a")).Background(lipgloss.Color("#e0af68")).Bold(true)
+	selectedCreateStyle  = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("#0f111a")).Background(lipgloss.Color("#9ece6a")).Bold(true)
+	selectedPlainStyle   = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("#0f111a")).Background(lipgloss.Color("#c0caf5")).Bold(true)
+	matchedWindowStyle   = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("#73daca")).Bold(true)
+	matchedSessionStyle  = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("#e0af68")).Bold(true)
+	windowRowStyle       = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("#9aa5ce"))
+	sessionRowStyle      = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("#c0caf5"))
+	createRowStyle       = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("#9ece6a"))
+	plainRowStyle        = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("#a9b1d6"))
+	previewHeaderStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#7aa2f7"))
+	previewMetaStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#c0caf5"))
+	previewLabelStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#7dcfff"))
+	previewMutedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#565f89"))
 )
+
+func init() {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
+}
 
 func initialModel() model {
 	input := textinput.New()
 	input.Placeholder = "session-or-window"
 	input.CharLimit = 64
-	input.Prompt = "> "
+	input.Prompt = ""
 	input.Focus()
 
 	return model{

@@ -4,6 +4,8 @@
 
 I built it to force myself to use `tmux` consistently, so my long-running SSH sessions stay available across devices and I can pick up my Codex and Claude Code sessions from anywhere without rebuilding context every time.
 
+![tmux-all-the-time demo](demo/tmux-all-the-time.gif)
+
 ## Why
 
 If you already work in SSH and AI coding tools, `tmux` is the obvious answer for persistence, but actually building the habit can still be annoying. A normal terminal opens into a plain shell, and that friction is enough to fall out of the workflow.
