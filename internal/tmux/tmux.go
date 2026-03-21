@@ -13,13 +13,20 @@ import (
 var ErrNoSessions = errors.New("no tmux sessions found")
 
 type Session struct {
-	Name     string
-	Windows  int
-	Attached bool
+	Name        string
+	WindowCount int
+	Attached    bool
+	Windows     []Window
+}
+
+type Window struct {
+	Index  int
+	Name   string
+	Active bool
 }
 
 func ListSessions() ([]Session, error) {
-	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}\t#{session_windows}\t#{session_attached}")
+	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}\x1f#{session_windows}\x1f#{session_attached}")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if isNoServerError(strings.TrimSpace(string(output))) {
@@ -37,7 +44,7 @@ func ListSessions() ([]Session, error) {
 			continue
 		}
 
-		fields := strings.Split(line, "\t")
+		fields := strings.Split(line, "\x1f")
 		if len(fields) != 3 {
 			return nil, fmt.Errorf("unexpected tmux session format: %q", line)
 		}
@@ -48,21 +55,75 @@ func ListSessions() ([]Session, error) {
 		}
 
 		sessions = append(sessions, Session{
-			Name:     fields[0],
-			Windows:  windows,
-			Attached: fields[2] == "1",
+			Name:        fields[0],
+			WindowCount: windows,
+			Attached:    fields[2] == "1",
 		})
+	}
+
+	windowsBySession, err := listWindows()
+	if err != nil {
+		return nil, err
 	}
 
 	sort.Slice(sessions, func(i, j int) bool {
 		return strings.ToLower(sessions[i].Name) < strings.ToLower(sessions[j].Name)
 	})
 
+	for i := range sessions {
+		sessions[i].Windows = windowsBySession[sessions[i].Name]
+	}
+
 	if len(sessions) == 0 {
 		return nil, ErrNoSessions
 	}
 
 	return sessions, nil
+}
+
+func listWindows() (map[string][]Window, error) {
+	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}\x1f#{window_index}\x1f#{window_name}\x1f#{window_active}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if isNoServerError(strings.TrimSpace(string(output))) {
+			return map[string][]Window{}, nil
+		}
+
+		return nil, fmt.Errorf("list tmux windows: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	windowsBySession := make(map[string][]Window)
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		fields := strings.Split(line, "\x1f")
+		if len(fields) != 4 {
+			return nil, fmt.Errorf("unexpected tmux window format: %q", line)
+		}
+
+		index, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return nil, fmt.Errorf("parse tmux window index %q: %w", fields[1], err)
+		}
+
+		windowsBySession[fields[0]] = append(windowsBySession[fields[0]], Window{
+			Index:  index,
+			Name:   fields[2],
+			Active: fields[3] == "1",
+		})
+	}
+
+	for sessionName := range windowsBySession {
+		sort.Slice(windowsBySession[sessionName], func(i, j int) bool {
+			return windowsBySession[sessionName][i].Index < windowsBySession[sessionName][j].Index
+		})
+	}
+
+	return windowsBySession, nil
 }
 
 func HasSession(name string) (bool, error) {
@@ -82,6 +143,19 @@ func HasSession(name string) (bool, error) {
 
 func Attach(name string) error {
 	return runInteractive("tmux", "attach-session", "-t", name)
+}
+
+func AttachWindow(sessionName string, windowIndex int) error {
+	target := fmt.Sprintf("%s:%d", sessionName, windowIndex)
+	if err := runInteractive("tmux", "attach-session", "-t", target); err == nil {
+		return nil
+	}
+
+	if err := exec.Command("tmux", "select-window", "-t", target).Run(); err != nil {
+		return fmt.Errorf("select tmux window %q: %w", target, err)
+	}
+
+	return runInteractive("tmux", "attach-session", "-t", sessionName)
 }
 
 func CreateAndAttach(name string) error {
