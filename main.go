@@ -51,6 +51,8 @@ type model struct {
 	cursor        int
 	input         textinput.Model
 	loading       bool
+	width         int
+	height        int
 	message       string
 	messageIsErr  bool
 	pendingAction action
@@ -58,7 +60,7 @@ type model struct {
 
 var (
 	titleStyle           = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-	rowStyle             = lipgloss.NewStyle().PaddingLeft(2)
+	rowStyle             = lipgloss.NewStyle().PaddingLeft(1)
 	helpStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	goodStyle            = lipgloss.NewStyle().Foreground(lipgloss.Color("42"))
 	badStyle             = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
@@ -72,6 +74,10 @@ var (
 	sessionRowStyle      = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("252"))
 	createRowStyle       = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("149"))
 	plainRowStyle        = lipgloss.NewStyle().Padding(0, 1).Foreground(lipgloss.Color("249"))
+	previewHeaderStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("45"))
+	previewMetaStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
+	previewLabelStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	previewMutedStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
 )
 
 func initialModel() model {
@@ -100,6 +106,11 @@ func (m model) Init() tea.Cmd {
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+
 	case sessionsLoadedMsg:
 		m.loading = false
 		if msg.err == nil {
@@ -171,20 +182,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
-	var body strings.Builder
+	header := lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		titleStyle.Render("tmux-all-the-time"),
+		helpStyle.Render("  enter select  tab/arrows move  ctrl+r reload  ctrl+c quit"),
+	)
+	searchLine := lipgloss.JoinHorizontal(
+		lipgloss.Center,
+		previewLabelStyle.Render("> "),
+		m.input.View(),
+	)
 
-	body.WriteString(titleStyle.Render("tmux-all-the-time"))
-	body.WriteString("\n")
-	body.WriteString(helpStyle.Render("Type a session name, attach to a match, create a new one, or continue without tmux."))
-	body.WriteString("\n\n")
-
-	body.WriteString("Search or new session name\n")
-	body.WriteString(m.input.View())
-	body.WriteString("\n\n")
+	sections := []string{header, searchLine}
 
 	if m.loading {
-		body.WriteString("Loading tmux sessions...")
-		return pad(body.String())
+		sections = append(sections, "Loading tmux sessions...")
+		return pad(strings.Join(sections, "\n"))
 	}
 
 	if m.message != "" {
@@ -192,31 +205,267 @@ func (m model) View() string {
 		if m.messageIsErr {
 			style = badStyle
 		}
-		body.WriteString(style.Render(m.message))
-		body.WriteString("\n\n")
+		if m.messageIsErr {
+			sections = append(sections, style.Render(m.message))
+		}
 	}
 
-	if validation := currentValidationMessage(strings.TrimSpace(m.input.Value()), m.sessions); validation != "" {
-		body.WriteString(helpStyle.Render(validation))
-		body.WriteString("\n\n")
-	}
+	sections = append(sections, m.renderPanels())
 
-	body.WriteString(m.renderOptions())
-	body.WriteString("\n\n")
-	body.WriteString(helpStyle.Render("type to filter  enter select  tab/arrows move  ctrl+r refresh  ctrl+c quit"))
-
-	return pad(body.String())
+	return pad(strings.Join(sections, "\n"))
 }
 
-func (m model) renderOptions() string {
-	options := m.options()
-	lines := make([]string, 0, len(options))
+func (m model) renderPanels() string {
+	contentHeight := m.panelContentHeight()
 
-	for i, option := range options {
-		lines = append(lines, rowStyle.Render(renderOptionLabel(option, m.cursor == i)))
+	if m.width > 0 {
+		panelWidth := max(m.width-8, 60)
+		if panelWidth >= 72 {
+			leftWidth := max(min(panelWidth*40/100, panelWidth-20), 26)
+			rightWidth := panelWidth - leftWidth - 1
+			leftLines := strings.Split(m.renderOptions(contentHeight, leftWidth), "\n")
+			rightLines := strings.Split(m.renderPreview(contentHeight, rightWidth), "\n")
+
+			leftPad := lipgloss.NewStyle().Width(leftWidth)
+			rightPad := lipgloss.NewStyle().Width(rightWidth)
+			rows := make([]string, 0, max(len(leftLines), len(rightLines)))
+
+			for i := 0; i < max(len(leftLines), len(rightLines)); i++ {
+				left := " "
+				right := " "
+				if i < len(leftLines) {
+					left = leftLines[i]
+				}
+				if i < len(rightLines) {
+					right = rightLines[i]
+				}
+
+				rows = append(rows, leftPad.Render(left)+" "+helpStyle.Render("│")+" "+rightPad.Render(right))
+			}
+
+			return strings.Join(rows, "\n")
+		}
 	}
 
-	return strings.Join(lines, "\n")
+	leftContent := m.renderOptions(contentHeight, 60)
+	rightContent := m.renderPreview(contentHeight, 60)
+	return leftContent + "\n" + helpStyle.Render(strings.Repeat("─", 40)) + "\n" + rightContent
+}
+
+func (m model) panelContentHeight() int {
+	if m.height <= 0 {
+		return 12
+	}
+
+	return max(m.height-12, 8)
+}
+
+func (m model) renderOptions(contentHeight, contentWidth int) string {
+	options := m.options()
+	lines := []string{previewHeaderStyle.Render("Sessions")}
+
+	for i, option := range options {
+		lines = append(lines, rowStyle.Render(renderOptionLabel(option, m.cursor == i, contentWidth)))
+	}
+
+	return strings.Join(fitLines(lines, contentHeight), "\n")
+}
+
+func (m model) renderPreview(contentHeight, contentWidth int) string {
+	lines := []string{previewHeaderStyle.Render("Preview")}
+
+	option, ok := m.selectedOption()
+	if !ok {
+		lines = append(lines, helpStyle.Render("No selection."))
+		return strings.Join(fitLines(limitPreviewWidth(lines, contentWidth), contentHeight), "\n")
+	}
+
+	switch option.kind {
+	case attachAction:
+		session, ok := m.findSession(option.sessionName)
+		if !ok {
+			lines = append(lines, badStyle.Render("Selected session no longer exists."))
+			return strings.Join(lines, "\n")
+		}
+
+		lines = append(lines, m.renderSessionPreview(session)...)
+	case attachWindowAction:
+		window, session, ok := m.findWindow(option.sessionName, option.windowIndex)
+		if !ok {
+			lines = append(lines, badStyle.Render("Selected window no longer exists."))
+			return strings.Join(lines, "\n")
+		}
+
+		lines = append(lines, m.renderWindowPreview(session, window)...)
+	case createAction:
+		lines = append(lines,
+			fmt.Sprintf("New session: %s", previewMetaStyle.Render(option.sessionName)),
+			"",
+			helpStyle.Render("Press Enter to create and attach to this new tmux session."),
+		)
+	case continueAction:
+		lines = append(lines,
+			"Plain shell",
+			"",
+			helpStyle.Render("Press Enter to continue without attaching to tmux."),
+		)
+	default:
+		lines = append(lines, helpStyle.Render("No preview available."))
+	}
+
+	return strings.Join(fitLines(limitPreviewWidth(lines, contentWidth), contentHeight), "\n")
+}
+
+func (m model) renderSessionPreview(session tmux.Session) []string {
+	lines := []string{compactPreviewLine(
+		"session", session.Name,
+		"windows", fmt.Sprintf("%d", session.WindowCount),
+	)}
+
+	activeWindow := activeWindowForSession(session)
+	if activeWindow == nil {
+		lines = append(lines, "", helpStyle.Render("No windows found in this session."))
+		return lines
+	}
+
+	lines = append(lines, "")
+	lines = append(lines, compactPreviewLine(
+		"active", fmt.Sprintf("%d:%s", activeWindow.Index, activeWindow.Name),
+		"cmd", fallbackValue(activeWindow.CurrentCommand, "-"),
+		"state", windowState(*activeWindow),
+	))
+	if title := compactPaneTitle(activeWindow.PaneTitle); title != "" {
+		lines = append(lines, compactPreviewLine("title", title))
+	}
+	lines = append(lines, "")
+	lines = append(lines, previewLabelStyle.Render("Captured output"))
+	lines = append(lines, renderPreviewLines(activeWindow.Preview)...)
+	return lines
+}
+
+func (m model) renderWindowPreview(session tmux.Session, window tmux.Window) []string {
+	lines := []string{
+		compactPreviewLine(
+			"session", session.Name,
+			"window", fmt.Sprintf("%d:%s", window.Index, window.Name),
+		),
+		compactPreviewLine(
+			"cmd", fallbackValue(window.CurrentCommand, "-"),
+			"state", windowState(window),
+		),
+	}
+	if title := compactPaneTitle(window.PaneTitle); title != "" {
+		lines = append(lines, compactPreviewLine("title", title))
+	}
+	lines = append(lines, "")
+	lines = append(lines, previewLabelStyle.Render("Captured output"))
+	lines = append(lines, renderPreviewLines(window.Preview)...)
+	return lines
+}
+
+func renderPreviewLines(lines []string) []string {
+	if len(lines) == 0 {
+		return []string{helpStyle.Render("No captured text for this pane yet.")}
+	}
+
+	if len(lines) > 10 {
+		lines = lines[len(lines)-10:]
+	}
+
+	rendered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		rendered = append(rendered, line)
+	}
+
+	return rendered
+}
+
+func fitLines(lines []string, height int) []string {
+	if height <= 0 {
+		return lines
+	}
+
+	if len(lines) > height {
+		if height == 1 {
+			return []string{lines[0]}
+		}
+
+		fitted := append([]string{}, lines[:height-1]...)
+		fitted = append(fitted, previewMutedStyle.Render("..."))
+		return fitted
+	}
+
+	for len(lines) < height {
+		lines = append(lines, " ")
+	}
+
+	return lines
+}
+
+func limitPreviewWidth(lines []string, width int) []string {
+	if width <= 0 {
+		return lines
+	}
+
+	limited := make([]string, 0, len(lines))
+	for _, line := range lines {
+		limited = append(limited, truncateText(line, width))
+	}
+
+	return limited
+}
+
+func truncateText(s string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+
+	runes := []rune(s)
+	if len(runes) <= maxWidth {
+		return s
+	}
+	if maxWidth <= 3 {
+		return string(runes[:maxWidth])
+	}
+
+	return string(runes[:maxWidth-3]) + "..."
+}
+
+func compactPreviewLine(parts ...string) string {
+	chunks := make([]string, 0, len(parts)/2)
+	for i := 0; i+1 < len(parts); i += 2 {
+		label := previewMutedStyle.Render(parts[i] + " ")
+		value := previewMetaStyle.Render(parts[i+1])
+		chunks = append(chunks, label+value)
+	}
+
+	return strings.Join(chunks, previewMutedStyle.Render("  |  "))
+}
+
+func compactPaneTitle(title string) string {
+	title = strings.TrimSpace(title)
+	title = strings.TrimSuffix(title, ".local")
+	if title == "" {
+		return ""
+	}
+
+	return truncateText(title, 26)
+}
+
+func fallbackValue(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+
+	return value
+}
+
+func windowState(window tmux.Window) string {
+	if window.Active {
+		return "active"
+	}
+
+	return "inactive"
 }
 
 func (m model) options() []option {
@@ -306,6 +555,54 @@ func (m *model) resetCursorForQuery() {
 	m.cursor = 0
 }
 
+func (m model) selectedOption() (option, bool) {
+	options := m.options()
+	if len(options) == 0 || m.cursor < 0 || m.cursor >= len(options) {
+		return option{}, false
+	}
+
+	return options[m.cursor], true
+}
+
+func (m model) findSession(name string) (tmux.Session, bool) {
+	for _, session := range m.sessions {
+		if session.Name == name {
+			return session, true
+		}
+	}
+
+	return tmux.Session{}, false
+}
+
+func (m model) findWindow(sessionName string, windowIndex int) (tmux.Window, tmux.Session, bool) {
+	for _, session := range m.sessions {
+		if session.Name != sessionName {
+			continue
+		}
+
+		for _, window := range session.Windows {
+			if window.Index == windowIndex {
+				return window, session, true
+			}
+		}
+	}
+
+	return tmux.Window{}, tmux.Session{}, false
+}
+
+func activeWindowForSession(session tmux.Session) *tmux.Window {
+	for i := range session.Windows {
+		if session.Windows[i].Active {
+			return &session.Windows[i]
+		}
+	}
+	if len(session.Windows) == 0 {
+		return nil
+	}
+
+	return &session.Windows[0]
+}
+
 func filterSessions(sessions []tmux.Session, query string) []tmux.Session {
 	if query == "" {
 		return sessions
@@ -386,6 +683,7 @@ func windowMatchScore(sessionName string, window tmux.Window, lowerQuery string)
 		strings.ToLower(fmt.Sprintf("%d", window.Index)),
 		strings.ToLower(fmt.Sprintf("%s:%d", sessionName, window.Index)),
 		strings.ToLower(fmt.Sprintf("%s:%s", sessionName, window.Name)),
+		strings.ToLower(window.CurrentCommand),
 	}
 
 	bestScore := 99
@@ -426,9 +724,9 @@ func sessionExists(sessions []tmux.Session, name string) bool {
 func currentValidationMessage(query string, sessions []tmux.Session) string {
 	switch {
 	case query == "":
-		return "Window rows are indented under each session. Press Enter on one to open that exact window."
+		return "The selected row previews on the right. Press Enter on an indented window row to open that exact window."
 	case hasMatchingWindow(sessions, query):
-		return "Matching windows stay nested under their session. Press Enter on the highlighted indented row to open it."
+		return "Matching windows stay nested under their session. The preview follows the highlighted row."
 	case sessionExists(sessions, query):
 		return fmt.Sprintf("Press Enter to attach to the existing session %q.", query)
 	case !sessionNamePattern.MatchString(query):
@@ -461,10 +759,15 @@ func formatWindowLabel(window tmux.Window) string {
 		marker = "*"
 	}
 
-	return fmt.Sprintf("[%s] %d:%s", marker, window.Index, window.Name)
+	suffix := window.Name
+	if window.CurrentCommand != "" {
+		suffix = fmt.Sprintf("%s [%s]", suffix, window.CurrentCommand)
+	}
+
+	return fmt.Sprintf("[%s] %d:%s", marker, window.Index, suffix)
 }
 
-func renderOptionLabel(option option, selected bool) string {
+func renderOptionLabel(option option, selected bool, contentWidth int) string {
 	style := optionStyle(option, selected)
 	prefix := "  "
 	if selected {
@@ -472,7 +775,7 @@ func renderOptionLabel(option option, selected bool) string {
 	}
 
 	indent := strings.Repeat("  ", option.indent)
-	return style.Render(indent + prefix + option.label)
+	return style.Render(truncateText(indent+prefix+option.label, max(contentWidth-4, 8)))
 }
 
 func optionStyle(option option, selected bool) lipgloss.Style {
@@ -508,6 +811,20 @@ func optionStyle(option option, selected bool) lipgloss.Style {
 
 func pad(content string) string {
 	return lipgloss.NewStyle().Padding(1, 2).Render(content)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func main() {

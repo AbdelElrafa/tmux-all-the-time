@@ -20,9 +20,25 @@ type Session struct {
 }
 
 type Window struct {
-	Index  int
-	Name   string
-	Active bool
+	Index          int
+	Name           string
+	Active         bool
+	PaneID         string
+	CurrentCommand string
+	PaneTitle      string
+	Preview        []string
+}
+
+type windowKey struct {
+	SessionName string
+	WindowIndex int
+}
+
+type paneDetails struct {
+	PaneID         string
+	CurrentCommand string
+	PaneTitle      string
+	Preview        []string
 }
 
 func ListSessions() ([]Session, error) {
@@ -94,6 +110,10 @@ func listWindows() (map[string][]Window, error) {
 
 	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
 	windowsBySession := make(map[string][]Window)
+	activePanes, err := listActivePanes()
+	if err != nil {
+		return nil, err
+	}
 
 	for _, line := range lines {
 		if strings.TrimSpace(line) == "" {
@@ -110,10 +130,17 @@ func listWindows() (map[string][]Window, error) {
 			return nil, fmt.Errorf("parse tmux window index %q: %w", fields[1], err)
 		}
 
+		key := windowKey{SessionName: fields[0], WindowIndex: index}
+		pane := activePanes[key]
+
 		windowsBySession[fields[0]] = append(windowsBySession[fields[0]], Window{
-			Index:  index,
-			Name:   fields[2],
-			Active: fields[3] == "1",
+			Index:          index,
+			Name:           fields[2],
+			Active:         fields[3] == "1",
+			PaneID:         pane.PaneID,
+			CurrentCommand: pane.CurrentCommand,
+			PaneTitle:      pane.PaneTitle,
+			Preview:        pane.Preview,
 		})
 	}
 
@@ -124,6 +151,83 @@ func listWindows() (map[string][]Window, error) {
 	}
 
 	return windowsBySession, nil
+}
+
+func listActivePanes() (map[windowKey]paneDetails, error) {
+	cmd := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_name}\x1f#{window_index}\x1f#{pane_active}\x1f#{pane_id}\x1f#{pane_current_command}\x1f#{pane_title}")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if isNoServerError(strings.TrimSpace(string(output))) {
+			return map[windowKey]paneDetails{}, nil
+		}
+
+		return nil, fmt.Errorf("list tmux panes: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	panes := make(map[windowKey]paneDetails)
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		fields := strings.Split(line, "\x1f")
+		if len(fields) != 6 {
+			return nil, fmt.Errorf("unexpected tmux pane format: %q", line)
+		}
+		if fields[2] != "1" {
+			continue
+		}
+
+		windowIndex, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return nil, fmt.Errorf("parse tmux pane window index %q: %w", fields[1], err)
+		}
+
+		panes[windowKey{SessionName: fields[0], WindowIndex: windowIndex}] = paneDetails{
+			PaneID:         fields[3],
+			CurrentCommand: fields[4],
+			PaneTitle:      fields[5],
+			Preview:        capturePanePreview(fields[3], 20),
+		}
+	}
+
+	return panes, nil
+}
+
+func capturePanePreview(targetPane string, lineCount int) []string {
+	cmd := exec.Command("tmux", "capture-pane", "-p", "-q", "-t", targetPane, "-S", fmt.Sprintf("-%d", lineCount), "-E", "-")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil
+	}
+
+	lines := strings.Split(strings.ReplaceAll(string(output), "\r\n", "\n"), "\n")
+	lines = trimBlankLines(lines)
+	if len(lines) == 0 {
+		return nil
+	}
+
+	if len(lines) > lineCount {
+		lines = lines[len(lines)-lineCount:]
+	}
+
+	return lines
+}
+
+func trimBlankLines(lines []string) []string {
+	start := 0
+	for start < len(lines) && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+
+	end := len(lines)
+	for end > start && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+
+	return lines[start:end]
 }
 
 func HasSession(name string) (bool, error) {

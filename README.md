@@ -14,6 +14,7 @@ A small terminal-first app that runs on shell startup, shows your existing `tmux
 - Filters existing `tmux` sessions live as you type
 - Shows the windows under each listed session
 - Lets search match window names and highlight the matching nested window row directly
+- Shows a live preview panel for the selected session or window
 - Lets you attach to a matching session on `Enter`
 - Lets you create a new session from the same screen when the name does not exist
 - Lets you continue without `tmux`
