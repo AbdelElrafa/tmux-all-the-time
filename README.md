@@ -8,6 +8,29 @@ A small terminal-first app that runs on shell startup, shows your existing `tmux
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) for the TUI
 - `tmux` as the session backend
 
+## Install
+
+Install `tmux` first.
+
+- macOS: `brew install tmux`
+- Ubuntu/Debian: `sudo apt install tmux`
+- Fedora: `sudo dnf install tmux`
+- Arch: `sudo pacman -S tmux`
+
+Then install the app and shell hook:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/abdelelrafa/tmux-all-the-time/main/install.sh | bash
+```
+
+What the installer does:
+
+- installs the binary to `~/.local/bin/tmux-all-the-time`
+- adds a managed startup block to your shell rc file
+- works with `zsh` and `bash`
+- uses a GitHub release binary when available
+- falls back to building from source with `go` if needed
+
 ## What the first version does
 
 - Shows one text input for the session name
@@ -35,20 +58,8 @@ This creates a binary named `tmux-all-the-time` in the project root.
 
 Use arrow keys or `Tab` to move through actions, then press `Enter`.
 
-## Hook it into `zsh`
-
-Add this to your `~/.zshrc`:
-
-```zsh
-if [[ -o interactive ]] && [[ -z "$TMUX" ]] && [[ -x "$HOME/Code/tmux-all-the-time/tmux-all-the-time" ]]; then
-  "$HOME/Code/tmux-all-the-time/tmux-all-the-time"
-fi
-```
-
-This prevents nested `tmux` launches and only runs for interactive shells.
-
 ## Notes
 
 - `tmux` must already be installed
-- If you want to skip the TUI for some terminals later, the `~/.zshrc` guard is the right place to add that logic
-- A useful next step is adding a wrapper script or env flag for bypassing the app temporarily
+- Set `TMUX_ALL_THE_TIME_DISABLE=1` to bypass the startup hook for one shell
+- The installer writes a clearly marked managed block so it can be updated cleanly later

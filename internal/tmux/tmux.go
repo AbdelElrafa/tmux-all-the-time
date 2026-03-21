@@ -16,6 +16,7 @@ type Session struct {
 	Name        string
 	WindowCount int
 	Attached    bool
+	Activity    int64
 	Windows     []Window
 }
 
@@ -23,6 +24,7 @@ type Window struct {
 	Index          int
 	Name           string
 	Active         bool
+	Activity       int64
 	PaneID         string
 	CurrentCommand string
 	PaneTitle      string
@@ -42,7 +44,7 @@ type paneDetails struct {
 }
 
 func ListSessions() ([]Session, error) {
-	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}\x1f#{session_windows}\x1f#{session_attached}")
+	cmd := exec.Command("tmux", "list-sessions", "-F", "#{session_name}\x1f#{session_windows}\x1f#{session_attached}\x1f#{session_activity}")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if isNoServerError(strings.TrimSpace(string(output))) {
@@ -61,7 +63,7 @@ func ListSessions() ([]Session, error) {
 		}
 
 		fields := strings.Split(line, "\x1f")
-		if len(fields) != 3 {
+		if len(fields) != 4 {
 			return nil, fmt.Errorf("unexpected tmux session format: %q", line)
 		}
 
@@ -70,10 +72,16 @@ func ListSessions() ([]Session, error) {
 			return nil, fmt.Errorf("parse tmux window count %q: %w", fields[1], err)
 		}
 
+		activity, err := strconv.ParseInt(fields[3], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse tmux session activity %q: %w", fields[3], err)
+		}
+
 		sessions = append(sessions, Session{
 			Name:        fields[0],
 			WindowCount: windows,
 			Attached:    fields[2] == "1",
+			Activity:    activity,
 		})
 	}
 
@@ -98,7 +106,7 @@ func ListSessions() ([]Session, error) {
 }
 
 func listWindows() (map[string][]Window, error) {
-	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}\x1f#{window_index}\x1f#{window_name}\x1f#{window_active}")
+	cmd := exec.Command("tmux", "list-windows", "-a", "-F", "#{session_name}\x1f#{window_index}\x1f#{window_name}\x1f#{window_active}\x1f#{window_activity}")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if isNoServerError(strings.TrimSpace(string(output))) {
@@ -121,13 +129,18 @@ func listWindows() (map[string][]Window, error) {
 		}
 
 		fields := strings.Split(line, "\x1f")
-		if len(fields) != 4 {
+		if len(fields) != 5 {
 			return nil, fmt.Errorf("unexpected tmux window format: %q", line)
 		}
 
 		index, err := strconv.Atoi(fields[1])
 		if err != nil {
 			return nil, fmt.Errorf("parse tmux window index %q: %w", fields[1], err)
+		}
+
+		activity, err := strconv.ParseInt(fields[4], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse tmux window activity %q: %w", fields[4], err)
 		}
 
 		key := windowKey{SessionName: fields[0], WindowIndex: index}
@@ -137,6 +150,7 @@ func listWindows() (map[string][]Window, error) {
 			Index:          index,
 			Name:           fields[2],
 			Active:         fields[3] == "1",
+			Activity:       activity,
 			PaneID:         pane.PaneID,
 			CurrentCommand: pane.CurrentCommand,
 			PaneTitle:      pane.PaneTitle,

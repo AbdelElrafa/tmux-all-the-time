@@ -117,6 +117,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sessions = msg.sessions
 			m.message = ""
 			m.messageIsErr = false
+			if strings.TrimSpace(m.input.Value()) == "" {
+				m.cursor = m.defaultCursor(m.options())
+			}
 			m.clampCursor()
 			return m, nil
 		}
@@ -125,6 +128,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sessions = nil
 			m.message = "No tmux sessions found yet. Type a name to create one or continue without tmux."
 			m.messageIsErr = false
+			m.cursor = 0
 			m.clampCursor()
 			return m, nil
 		}
@@ -534,7 +538,7 @@ func (m *model) resetCursorForQuery() {
 	options := m.options()
 
 	if query == "" || len(options) == 0 {
-		m.cursor = 0
+		m.cursor = m.defaultCursor(options)
 		return
 	}
 
@@ -553,6 +557,53 @@ func (m *model) resetCursorForQuery() {
 	}
 
 	m.cursor = 0
+}
+
+func (m model) defaultCursor(options []option) int {
+	bestIndex := -1
+	var bestWindowActivity int64 = -1
+	var bestSessionActivity int64 = -1
+
+	for i, option := range options {
+		if option.kind != attachWindowAction {
+			continue
+		}
+
+		window, session, ok := m.findWindow(option.sessionName, option.windowIndex)
+		if !ok {
+			continue
+		}
+
+		if window.Activity > bestWindowActivity || (window.Activity == bestWindowActivity && session.Activity > bestSessionActivity) {
+			bestIndex = i
+			bestWindowActivity = window.Activity
+			bestSessionActivity = session.Activity
+		}
+	}
+
+	if bestIndex >= 0 {
+		return bestIndex
+	}
+
+	bestIndex = 0
+	bestSessionActivity = -1
+	for i, option := range options {
+		if option.kind != attachAction {
+			continue
+		}
+
+		session, ok := m.findSession(option.sessionName)
+		if !ok {
+			continue
+		}
+
+		if session.Activity > bestSessionActivity {
+			bestIndex = i
+			bestSessionActivity = session.Activity
+		}
+	}
+
+	return bestIndex
 }
 
 func (m model) selectedOption() (option, bool) {
