@@ -12,6 +12,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/mattn/go-runewidth"
 	"github.com/muesli/termenv"
 )
 
@@ -57,6 +59,11 @@ type model struct {
 	message       string
 	messageIsErr  bool
 	pendingAction action
+}
+
+type previewBlock struct {
+	meta []string
+	body []string
 }
 
 var (
@@ -264,10 +271,10 @@ func (m model) renderPanels() string {
 
 func (m model) panelContentHeight() int {
 	if m.height <= 0 {
-		return 12
+		return 14
 	}
 
-	return max(m.height-12, 8)
+	return max(m.height-8, 10)
 }
 
 func (m model) renderOptions(contentHeight, contentWidth int) string {
@@ -282,112 +289,130 @@ func (m model) renderOptions(contentHeight, contentWidth int) string {
 }
 
 func (m model) renderPreview(contentHeight, contentWidth int) string {
-	lines := []string{previewHeaderStyle.Render("Preview")}
+	block := previewBlock{
+		meta: []string{previewHeaderStyle.Render("Preview")},
+	}
 
 	option, ok := m.selectedOption()
 	if !ok {
-		lines = append(lines, helpStyle.Render("No selection."))
-		return strings.Join(fitLines(limitPreviewWidth(lines, contentWidth), contentHeight), "\n")
+		block.meta = append(block.meta, helpStyle.Render("No selection."))
+		return strings.Join(fitPreviewBlock(block, contentHeight), "\n")
 	}
 
 	switch option.kind {
 	case attachAction:
 		session, ok := m.findSession(option.sessionName)
 		if !ok {
-			lines = append(lines, badStyle.Render("Selected session no longer exists."))
-			return strings.Join(lines, "\n")
+			block.meta = append(block.meta, badStyle.Render("Selected session no longer exists."))
+			return strings.Join(fitPreviewBlock(block, contentHeight), "\n")
 		}
 
-		lines = append(lines, m.renderSessionPreview(session)...)
+		block = m.renderSessionPreview(session, contentWidth)
 	case attachWindowAction:
 		window, session, ok := m.findWindow(option.sessionName, option.windowIndex)
 		if !ok {
-			lines = append(lines, badStyle.Render("Selected window no longer exists."))
-			return strings.Join(lines, "\n")
+			block.meta = append(block.meta, badStyle.Render("Selected window no longer exists."))
+			return strings.Join(fitPreviewBlock(block, contentHeight), "\n")
 		}
 
-		lines = append(lines, m.renderWindowPreview(session, window)...)
+		block = m.renderWindowPreview(session, window, contentWidth)
 	case createAction:
-		lines = append(lines,
-			fmt.Sprintf("New session: %s", previewMetaStyle.Render(option.sessionName)),
-			"",
+		block.meta = append(block.meta,
+			previewLine(contentWidth, "New session: "+option.sessionName),
 			helpStyle.Render("Press Enter to create and attach to this new tmux session."),
 		)
 	case continueAction:
-		lines = append(lines,
-			"Plain shell",
-			"",
+		block.meta = append(block.meta,
+			previewLine(contentWidth, "Plain shell"),
 			helpStyle.Render("Press Enter to continue without attaching to tmux."),
 		)
 	default:
-		lines = append(lines, helpStyle.Render("No preview available."))
+		block.meta = append(block.meta, helpStyle.Render("No preview available."))
 	}
 
-	return strings.Join(fitLines(limitPreviewWidth(lines, contentWidth), contentHeight), "\n")
+	return strings.Join(fitPreviewBlock(block, contentHeight), "\n")
 }
 
-func (m model) renderSessionPreview(session tmux.Session) []string {
-	lines := []string{compactPreviewLine(
+func (m model) renderSessionPreview(session tmux.Session, contentWidth int) previewBlock {
+	block := previewBlock{
+		meta: []string{previewHeaderStyle.Render("Preview")},
+	}
+	block.meta = append(block.meta, compactPreviewLineWidth(contentWidth,
 		"session", session.Name,
 		"windows", fmt.Sprintf("%d", session.WindowCount),
-	)}
+	))
 
 	activeWindow := activeWindowForSession(session)
 	if activeWindow == nil {
-		lines = append(lines, "", helpStyle.Render("No windows found in this session."))
-		return lines
+		block.meta = append(block.meta, helpStyle.Render("No windows found in this session."))
+		return block
 	}
 
-	lines = append(lines, "")
-	lines = append(lines, compactPreviewLine(
+	block.meta = append(block.meta, compactPreviewLineWidth(contentWidth,
 		"active", fmt.Sprintf("%d:%s", activeWindow.Index, activeWindow.Name),
 		"cmd", fallbackValue(activeWindow.CurrentCommand, "-"),
 		"state", windowState(*activeWindow),
 	))
-	if title := compactPaneTitle(activeWindow.PaneTitle); title != "" {
-		lines = append(lines, compactPreviewLine("title", title))
+	if activeWindow.CurrentPath != "" {
+		block.meta = append(block.meta, pathPreviewLine(contentWidth, "pwd", activeWindow.CurrentPath))
 	}
-	lines = append(lines, "")
-	lines = append(lines, previewLabelStyle.Render("Captured output"))
-	lines = append(lines, renderPreviewLines(activeWindow.Preview)...)
-	return lines
+	if title := compactPaneTitle(activeWindow.PaneTitle); title != "" {
+		block.meta = append(block.meta, compactPreviewLineWidth(contentWidth, "title", title))
+	}
+	block.meta = append(block.meta, previewLabelStyle.Render("Captured output"))
+	block.body = renderPreviewLines(activeWindow.Preview, contentWidth)
+	return block
 }
 
-func (m model) renderWindowPreview(session tmux.Session, window tmux.Window) []string {
-	lines := []string{
-		compactPreviewLine(
-			"session", session.Name,
-			"window", fmt.Sprintf("%d:%s", window.Index, window.Name),
-		),
-		compactPreviewLine(
-			"cmd", fallbackValue(window.CurrentCommand, "-"),
-			"state", windowState(window),
-		),
+func (m model) renderWindowPreview(session tmux.Session, window tmux.Window, contentWidth int) previewBlock {
+	block := previewBlock{
+		meta: []string{
+			previewHeaderStyle.Render("Preview"),
+			compactPreviewLineWidth(contentWidth,
+				"session", session.Name,
+				"window", fmt.Sprintf("%d:%s", window.Index, window.Name),
+			),
+			compactPreviewLineWidth(contentWidth,
+				"cmd", fallbackValue(window.CurrentCommand, "-"),
+				"state", windowState(window),
+			),
+		},
+	}
+	if window.CurrentPath != "" {
+		block.meta = append(block.meta, pathPreviewLine(contentWidth, "pwd", window.CurrentPath))
 	}
 	if title := compactPaneTitle(window.PaneTitle); title != "" {
-		lines = append(lines, compactPreviewLine("title", title))
+		block.meta = append(block.meta, compactPreviewLineWidth(contentWidth, "title", title))
 	}
-	lines = append(lines, "")
-	lines = append(lines, previewLabelStyle.Render("Captured output"))
-	lines = append(lines, renderPreviewLines(window.Preview)...)
-	return lines
+	block.meta = append(block.meta, previewLabelStyle.Render("Captured output"))
+	block.body = renderPreviewLines(window.Preview, contentWidth)
+	return block
 }
 
-func renderPreviewLines(lines []string) []string {
+func renderPreviewLines(lines []string, contentWidth int) []string {
 	if len(lines) == 0 {
 		return []string{helpStyle.Render("No captured text for this pane yet.")}
 	}
 
-	if len(lines) > 10 {
-		lines = lines[len(lines)-10:]
-	}
-
 	rendered := make([]string, 0, len(lines))
 	for _, line := range lines {
-		rendered = append(rendered, line)
+		rendered = append(rendered, previewLine(contentWidth, line))
 	}
 
 	return rendered
+}
+
+func fitPreviewBlock(block previewBlock, height int) []string {
+	lines := append([]string{}, block.meta...)
+	if len(block.body) > 0 && height > len(lines) {
+		available := height - len(lines)
+		if len(block.body) > available {
+			block.body = block.body[len(block.body)-available:]
+		}
+		lines = append(lines, block.body...)
+	}
+
+	return fitLines(lines, height)
 }
 
 func fitLines(lines []string, height int) []string {
@@ -412,36 +437,22 @@ func fitLines(lines []string, height int) []string {
 	return lines
 }
 
-func limitPreviewWidth(lines []string, width int) []string {
-	if width <= 0 {
-		return lines
-	}
-
-	limited := make([]string, 0, len(lines))
-	for _, line := range lines {
-		limited = append(limited, truncateText(line, width))
-	}
-
-	return limited
-}
-
 func truncateText(s string, maxWidth int) string {
 	if maxWidth <= 0 {
 		return ""
 	}
 
-	runes := []rune(s)
-	if len(runes) <= maxWidth {
+	if runewidth.StringWidth(s) <= maxWidth {
 		return s
 	}
 	if maxWidth <= 3 {
-		return string(runes[:maxWidth])
+		return runewidth.Truncate(s, maxWidth, "")
 	}
 
-	return string(runes[:maxWidth-3]) + "..."
+	return runewidth.Truncate(s, maxWidth, "...")
 }
 
-func compactPreviewLine(parts ...string) string {
+func compactPreviewLineWidth(width int, parts ...string) string {
 	chunks := make([]string, 0, len(parts)/2)
 	for i := 0; i+1 < len(parts); i += 2 {
 		label := previewMutedStyle.Render(parts[i] + " ")
@@ -449,7 +460,38 @@ func compactPreviewLine(parts ...string) string {
 		chunks = append(chunks, label+value)
 	}
 
-	return strings.Join(chunks, previewMutedStyle.Render("  |  "))
+	return clipStyledLine(strings.Join(chunks, previewMutedStyle.Render("  |  ")), width)
+}
+
+func pathPreviewLine(width int, label, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return compactPreviewLineWidth(width, label, "-")
+	}
+
+	displayPath := strings.Replace(path, os.Getenv("HOME"), "~", 1)
+	labelText := label + " "
+	available := max(width-len(labelText), 8)
+	if runewidth.StringWidth(displayPath) > available {
+		displayPath = runewidth.TruncateLeft(displayPath, available, "...")
+	}
+
+	return previewMutedStyle.Render(labelText) + previewMetaStyle.Render(displayPath)
+}
+
+func previewLine(width int, text string) string {
+	return truncateText(text, width)
+}
+
+func clipStyledLine(line string, width int) string {
+	if width <= 0 || lipgloss.Width(line) <= width {
+		return line
+	}
+	if width <= 3 {
+		return ansi.CutWc(line, 0, width)
+	}
+
+	return ansi.CutWc(line, 0, width-3) + previewMutedStyle.Render("...")
 }
 
 func compactPaneTitle(title string) string {
@@ -459,7 +501,7 @@ func compactPaneTitle(title string) string {
 		return ""
 	}
 
-	return truncateText(title, 26)
+	return title
 }
 
 func fallbackValue(value, fallback string) string {

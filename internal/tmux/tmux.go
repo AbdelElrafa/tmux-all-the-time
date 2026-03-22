@@ -27,6 +27,7 @@ type Window struct {
 	Activity       int64
 	PaneID         string
 	CurrentCommand string
+	CurrentPath    string
 	PaneTitle      string
 	Preview        []string
 }
@@ -39,6 +40,7 @@ type windowKey struct {
 type paneDetails struct {
 	PaneID         string
 	CurrentCommand string
+	CurrentPath    string
 	PaneTitle      string
 	Preview        []string
 }
@@ -153,6 +155,7 @@ func listWindows() (map[string][]Window, error) {
 			Activity:       activity,
 			PaneID:         pane.PaneID,
 			CurrentCommand: pane.CurrentCommand,
+			CurrentPath:    pane.CurrentPath,
 			PaneTitle:      pane.PaneTitle,
 			Preview:        pane.Preview,
 		})
@@ -168,7 +171,7 @@ func listWindows() (map[string][]Window, error) {
 }
 
 func listActivePanes() (map[windowKey]paneDetails, error) {
-	cmd := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_name}\x1f#{window_index}\x1f#{pane_active}\x1f#{pane_id}\x1f#{pane_current_command}\x1f#{pane_title}")
+	cmd := exec.Command("tmux", "list-panes", "-a", "-F", "#{session_name}\x1f#{window_index}\x1f#{pane_active}\x1f#{pane_id}\x1f#{pane_current_command}\x1f#{pane_current_path}\x1f#{pane_title}")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if isNoServerError(strings.TrimSpace(string(output))) {
@@ -187,7 +190,7 @@ func listActivePanes() (map[windowKey]paneDetails, error) {
 		}
 
 		fields := strings.Split(line, "\x1f")
-		if len(fields) != 6 {
+		if len(fields) != 7 {
 			return nil, fmt.Errorf("unexpected tmux pane format: %q", line)
 		}
 		if fields[2] != "1" {
@@ -202,7 +205,8 @@ func listActivePanes() (map[windowKey]paneDetails, error) {
 		panes[windowKey{SessionName: fields[0], WindowIndex: windowIndex}] = paneDetails{
 			PaneID:         fields[3],
 			CurrentCommand: fields[4],
-			PaneTitle:      fields[5],
+			CurrentPath:    fields[5],
+			PaneTitle:      fields[6],
 			Preview:        capturePanePreview(fields[3], 20),
 		}
 	}
