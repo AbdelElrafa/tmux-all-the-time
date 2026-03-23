@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/abdelelrafa/tmux-all-the-time/internal/tmux"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -18,6 +19,10 @@ import (
 )
 
 var sessionNamePattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+var (
+	oscSequencePattern = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+	csiSequencePattern = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]`)
+)
 
 type actionKind int
 
@@ -62,8 +67,10 @@ type model struct {
 }
 
 type previewBlock struct {
-	meta []string
-	body []string
+	meta       []string
+	bodyRaw    string
+	bodyWidth  int
+	bodyHeight int
 }
 
 var (
@@ -238,7 +245,7 @@ func (m model) renderPanels() string {
 	if m.width > 0 {
 		panelWidth := max(m.width-8, 60)
 		if panelWidth >= 72 {
-			leftWidth := max(min(panelWidth*40/100, panelWidth-20), 26)
+			leftWidth := sidebarWidth(panelWidth)
 			rightWidth := panelWidth - leftWidth - 1
 			leftLines := strings.Split(m.renderOptions(contentHeight, leftWidth), "\n")
 			rightLines := strings.Split(m.renderPreview(contentHeight, rightWidth), "\n")
@@ -269,6 +276,21 @@ func (m model) renderPanels() string {
 	return leftContent + "\n" + helpStyle.Render(strings.Repeat("─", 40)) + "\n" + rightContent
 }
 
+func sidebarWidth(panelWidth int) int {
+	const (
+		minSidebarWidth = 26
+		maxSidebarWidth = 38
+		minPreviewWidth = 40
+	)
+
+	if panelWidth <= minSidebarWidth+1+minPreviewWidth {
+		return minSidebarWidth
+	}
+
+	preferred := panelWidth * 32 / 100
+	return min(max(preferred, minSidebarWidth), min(maxSidebarWidth, panelWidth-1-minPreviewWidth))
+}
+
 func (m model) panelContentHeight() int {
 	if m.height <= 0 {
 		return 14
@@ -296,7 +318,7 @@ func (m model) renderPreview(contentHeight, contentWidth int) string {
 	option, ok := m.selectedOption()
 	if !ok {
 		block.meta = append(block.meta, helpStyle.Render("No selection."))
-		return strings.Join(fitPreviewBlock(block, contentHeight), "\n")
+		return strings.Join(fitPreviewBlock(block, contentWidth, contentHeight), "\n")
 	}
 
 	switch option.kind {
@@ -304,7 +326,7 @@ func (m model) renderPreview(contentHeight, contentWidth int) string {
 		session, ok := m.findSession(option.sessionName)
 		if !ok {
 			block.meta = append(block.meta, badStyle.Render("Selected session no longer exists."))
-			return strings.Join(fitPreviewBlock(block, contentHeight), "\n")
+			return strings.Join(fitPreviewBlock(block, contentWidth, contentHeight), "\n")
 		}
 
 		block = m.renderSessionPreview(session, contentWidth)
@@ -312,7 +334,7 @@ func (m model) renderPreview(contentHeight, contentWidth int) string {
 		window, session, ok := m.findWindow(option.sessionName, option.windowIndex)
 		if !ok {
 			block.meta = append(block.meta, badStyle.Render("Selected window no longer exists."))
-			return strings.Join(fitPreviewBlock(block, contentHeight), "\n")
+			return strings.Join(fitPreviewBlock(block, contentWidth, contentHeight), "\n")
 		}
 
 		block = m.renderWindowPreview(session, window, contentWidth)
@@ -330,7 +352,7 @@ func (m model) renderPreview(contentHeight, contentWidth int) string {
 		block.meta = append(block.meta, helpStyle.Render("No preview available."))
 	}
 
-	return strings.Join(fitPreviewBlock(block, contentHeight), "\n")
+	return strings.Join(fitPreviewBlock(block, contentWidth, contentHeight), "\n")
 }
 
 func (m model) renderSessionPreview(session tmux.Session, contentWidth int) previewBlock {
@@ -360,7 +382,9 @@ func (m model) renderSessionPreview(session tmux.Session, contentWidth int) prev
 		block.meta = append(block.meta, compactPreviewLineWidth(contentWidth, "title", title))
 	}
 	block.meta = append(block.meta, previewLabelStyle.Render("Captured output"))
-	block.body = renderPreviewLines(activeWindow.Preview, contentWidth)
+	block.bodyRaw = activeWindow.Preview
+	block.bodyWidth = activeWindow.PaneWidth
+	block.bodyHeight = activeWindow.PaneHeight
 	return block
 }
 
@@ -385,31 +409,113 @@ func (m model) renderWindowPreview(session tmux.Session, window tmux.Window, con
 		block.meta = append(block.meta, compactPreviewLineWidth(contentWidth, "title", title))
 	}
 	block.meta = append(block.meta, previewLabelStyle.Render("Captured output"))
-	block.body = renderPreviewLines(window.Preview, contentWidth)
+	block.bodyRaw = window.Preview
+	block.bodyWidth = window.PaneWidth
+	block.bodyHeight = window.PaneHeight
 	return block
 }
 
-func renderPreviewLines(lines []string, contentWidth int) []string {
+func renderPreviewLines(raw string, paneWidth, paneHeight, contentWidth, contentHeight int) []string {
+	raw = sanitizePreviewANSI(raw)
+	if strings.TrimSpace(ansi.Strip(raw)) == "" {
+		return []string{helpStyle.Render("No captured text for this pane yet.")}
+	}
+	if contentWidth <= 0 || contentHeight <= 0 {
+		return nil
+	}
+	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "")
+	lines := strings.Split(normalized, "\n")
 	if len(lines) == 0 {
 		return []string{helpStyle.Render("No captured text for this pane yet.")}
 	}
 
-	rendered := make([]string, 0, len(lines))
-	for _, line := range lines {
-		rendered = append(rendered, previewLine(contentWidth, line))
+	rowStart, rowEnd := previewRowRange(lines, contentHeight)
+	colStart := previewColumnStart(paneWidth, contentWidth)
+
+	rendered := make([]string, 0, rowEnd-rowStart)
+	for _, line := range lines[rowStart:rowEnd] {
+		rendered = append(rendered, previewContentViewport(line, colStart, contentWidth))
 	}
 
 	return rendered
 }
 
-func fitPreviewBlock(block previewBlock, height int) []string {
-	lines := append([]string{}, block.meta...)
-	if len(block.body) > 0 && height > len(lines) {
-		available := height - len(lines)
-		if len(block.body) > available {
-			block.body = block.body[len(block.body)-available:]
+func previewRowRange(lines []string, contentHeight int) (int, int) {
+	if len(lines) == 0 {
+		return 0, 0
+	}
+
+	lastTextRow := -1
+	for i, line := range lines {
+		if strings.TrimSpace(ansi.Strip(line)) != "" {
+			lastTextRow = i
 		}
-		lines = append(lines, block.body...)
+	}
+
+	if lastTextRow < 0 {
+		rowStart := max(0, len(lines)-contentHeight)
+		return rowStart, min(len(lines), rowStart+contentHeight)
+	}
+
+	rowEnd := min(len(lines), lastTextRow+1)
+	rowStart := max(0, rowEnd-contentHeight)
+	return rowStart, rowEnd
+}
+
+func previewColumnStart(paneWidth, contentWidth int) int {
+	if paneWidth <= contentWidth {
+		return 0
+	}
+
+	return 0
+}
+
+func previewContentViewport(line string, start, width int) string {
+	if width <= 0 {
+		return ""
+	}
+
+	return ansi.CutWc(line, start, width) + ansi.ResetStyle
+}
+
+func sanitizePreviewANSI(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "")
+	s = oscSequencePattern.ReplaceAllString(s, "")
+	s = csiSequencePattern.ReplaceAllStringFunc(s, func(seq string) string {
+		if strings.HasSuffix(seq, "m") {
+			return seq
+		}
+		return ""
+	})
+
+	var b strings.Builder
+	b.Grow(len(s))
+	for len(s) > 0 {
+		r, size := utf8.DecodeRuneInString(s)
+		if r == utf8.RuneError && size == 1 {
+			s = s[size:]
+			continue
+		}
+		if r == '\x1b' || r == '\n' || r == '\t' || r >= ' ' {
+			b.WriteRune(r)
+		}
+		s = s[size:]
+	}
+
+	return b.String()
+}
+
+func fitPreviewBlock(block previewBlock, width, height int) []string {
+	lines := append([]string{}, block.meta...)
+	if strings.TrimSpace(ansi.Strip(block.bodyRaw)) != "" && height > len(lines) {
+		available := height - len(lines)
+		bodyLines := renderPreviewLines(block.bodyRaw, block.bodyWidth, block.bodyHeight, width, available)
+		if len(bodyLines) > available {
+			bodyLines = bodyLines[len(bodyLines)-available:]
+		}
+		lines = append(lines, bodyLines...)
 	}
 
 	return fitLines(lines, height)
@@ -480,7 +586,22 @@ func pathPreviewLine(width int, label, path string) string {
 }
 
 func previewLine(width int, text string) string {
-	return truncateText(text, width)
+	if width <= 0 {
+		return ""
+	}
+	if width <= 3 {
+		return ansi.TruncateWc(text, width, "")
+	}
+
+	return ansi.TruncateWc(text, width, "...")
+}
+
+func previewContentLine(width int, text string) string {
+	if width <= 0 {
+		return ""
+	}
+
+	return ansi.CutWc(text, 0, width)
 }
 
 func clipStyledLine(line string, width int) string {
@@ -488,10 +609,10 @@ func clipStyledLine(line string, width int) string {
 		return line
 	}
 	if width <= 3 {
-		return ansi.CutWc(line, 0, width)
+		return ansi.TruncateWc(line, width, "")
 	}
 
-	return ansi.CutWc(line, 0, width-3) + previewMutedStyle.Render("...")
+	return ansi.TruncateWc(line, width, "...")
 }
 
 func compactPaneTitle(title string) string {
