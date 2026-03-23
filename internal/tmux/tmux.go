@@ -315,6 +315,23 @@ func CreateAndAttach(name string) error {
 	return runInteractive("tmux", "new-session", "-s", name)
 }
 
+func KillSession(name string) error {
+	if err := exec.Command("tmux", "kill-session", "-t", name).Run(); err != nil {
+		return fmt.Errorf("kill tmux session %q: %w", name, err)
+	}
+
+	return nil
+}
+
+func KillWindow(sessionName string, windowIndex int) error {
+	target := fmt.Sprintf("%s:%d", sessionName, windowIndex)
+	if err := exec.Command("tmux", "kill-window", "-t", target).Run(); err != nil {
+		return fmt.Errorf("kill tmux window %q: %w", target, err)
+	}
+
+	return nil
+}
+
 func runInteractive(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	cmd.Stdin = os.Stdin

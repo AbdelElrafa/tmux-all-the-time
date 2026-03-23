@@ -32,6 +32,8 @@ const (
 	attachWindowAction
 	createAction
 	continueAction
+	deleteSessionAction
+	deleteWindowAction
 )
 
 type action struct {
@@ -54,6 +56,11 @@ type sessionsLoadedMsg struct {
 	err      error
 }
 
+type deleteCompletedMsg struct {
+	target action
+	err    error
+}
+
 type model struct {
 	sessions      []tmux.Session
 	cursor        int
@@ -64,6 +71,7 @@ type model struct {
 	message       string
 	messageIsErr  bool
 	pendingAction action
+	confirmDelete action
 }
 
 type previewBlock struct {
@@ -120,6 +128,23 @@ func loadSessionsCmd() tea.Cmd {
 	}
 }
 
+func deleteTargetCmd(target action) tea.Cmd {
+	return func() tea.Msg {
+		var err error
+
+		switch target.kind {
+		case deleteSessionAction:
+			err = tmux.KillSession(target.sessionName)
+		case deleteWindowAction:
+			err = tmux.KillWindow(target.sessionName, target.windowIndex)
+		default:
+			err = fmt.Errorf("unsupported delete action: %d", target.kind)
+		}
+
+		return deleteCompletedMsg{target: target, err: err}
+	}
+}
+
 func (m model) Init() tea.Cmd {
 	return loadSessionsCmd()
 }
@@ -135,8 +160,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		if msg.err == nil {
 			m.sessions = msg.sessions
-			m.message = ""
-			m.messageIsErr = false
+			if m.messageIsErr {
+				m.message = ""
+				m.messageIsErr = false
+			}
 			if strings.TrimSpace(m.input.Value()) == "" {
 				m.cursor = m.defaultCursor(m.options())
 			}
@@ -158,7 +185,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.clampCursor()
 		return m, nil
 
+	case deleteCompletedMsg:
+		m.confirmDelete = action{}
+		if msg.err != nil {
+			m.message = msg.err.Error()
+			m.messageIsErr = true
+			return m, nil
+		}
+
+		m.message = deleteSuccessMessage(msg.target)
+		m.messageIsErr = false
+		m.loading = true
+		return m, loadSessionsCmd()
+
 	case tea.KeyMsg:
+		if m.hasDeleteConfirmation() {
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "esc", "n":
+				m.confirmDelete = action{}
+				return m, nil
+			case "y", "enter":
+				m.loading = true
+				m.message = ""
+				m.messageIsErr = false
+				return m, deleteTargetCmd(m.confirmDelete)
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
@@ -176,7 +232,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.loading = true
 			m.message = ""
 			m.messageIsErr = false
+			m.confirmDelete = action{}
 			return m, loadSessionsCmd()
+		case "ctrl+d":
+			target, ok := m.deleteActionForSelection()
+			if ok {
+				m.confirmDelete = target
+			}
+			return m, nil
 		case "enter":
 			options := m.options()
 			if len(options) == 0 {
@@ -209,7 +272,7 @@ func (m model) View() string {
 	header := lipgloss.JoinHorizontal(
 		lipgloss.Center,
 		titleStyle.Render("tmux-all-the-time"),
-		helpStyle.Render("  enter select  tab/arrows move  ctrl+r reload  ctrl+c quit"),
+		helpStyle.Render("  "+m.helpText()),
 	)
 	searchLine := lipgloss.JoinHorizontal(
 		lipgloss.Center,
@@ -229,9 +292,7 @@ func (m model) View() string {
 		if m.messageIsErr {
 			style = badStyle
 		}
-		if m.messageIsErr {
-			sections = append(sections, style.Render(m.message))
-		}
+		sections = append(sections, style.Render(m.message))
 	}
 
 	sections = append(sections, m.renderPanels())
@@ -313,6 +374,11 @@ func (m model) renderOptions(contentHeight, contentWidth int) string {
 func (m model) renderPreview(contentHeight, contentWidth int) string {
 	block := previewBlock{
 		meta: []string{previewHeaderStyle.Render("Preview")},
+	}
+
+	if m.hasDeleteConfirmation() {
+		block.meta = append(block.meta, m.deleteConfirmationLines(contentWidth)...)
+		return strings.Join(fitPreviewBlock(block, contentWidth, contentHeight), "\n")
 	}
 
 	option, ok := m.selectedOption()
@@ -477,6 +543,72 @@ func previewContentViewport(line string, start, width int) string {
 	}
 
 	return ansi.CutWc(line, start, width) + ansi.ResetStyle
+}
+
+func (m model) hasDeleteConfirmation() bool {
+	return m.confirmDelete.kind == deleteSessionAction || m.confirmDelete.kind == deleteWindowAction
+}
+
+func (m model) deleteActionForSelection() (action, bool) {
+	selected, ok := m.selectedOption()
+	if !ok {
+		return action{}, false
+	}
+
+	switch selected.kind {
+	case attachAction:
+		return action{
+			kind:        deleteSessionAction,
+			sessionName: selected.sessionName,
+		}, true
+	case attachWindowAction:
+		return action{
+			kind:        deleteWindowAction,
+			sessionName: selected.sessionName,
+			windowIndex: selected.windowIndex,
+		}, true
+	default:
+		return action{}, false
+	}
+}
+
+func (m model) deleteConfirmationLines(width int) []string {
+	target := deleteLabel(m.confirmDelete)
+	return []string{
+		badStyle.Render(previewLine(width, "Delete "+target+"?")),
+		helpStyle.Render(previewLine(width, "Press y or Enter to confirm.")),
+		helpStyle.Render(previewLine(width, "Press n or Esc to cancel.")),
+	}
+}
+
+func deleteSuccessMessage(target action) string {
+	switch target.kind {
+	case deleteSessionAction:
+		return fmt.Sprintf("Deleted session %q.", target.sessionName)
+	case deleteWindowAction:
+		return fmt.Sprintf("Deleted window %s:%d.", target.sessionName, target.windowIndex)
+	default:
+		return "Delete completed."
+	}
+}
+
+func deleteLabel(target action) string {
+	switch target.kind {
+	case deleteSessionAction:
+		return fmt.Sprintf("session %q", target.sessionName)
+	case deleteWindowAction:
+		return fmt.Sprintf("window %s:%d", target.sessionName, target.windowIndex)
+	default:
+		return "selection"
+	}
+}
+
+func (m model) helpText() string {
+	if m.hasDeleteConfirmation() {
+		return "y/enter confirm delete  n/esc cancel  ctrl+c quit"
+	}
+
+	return "enter select  ctrl+d delete  tab/arrows move  ctrl+r reload  ctrl+c quit"
 }
 
 func sanitizePreviewANSI(s string) string {

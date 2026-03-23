@@ -64,8 +64,19 @@ After install, open a new terminal window and the selector should appear automat
 - Type to filter sessions or windows
 - Use arrow keys or `Tab` to move
 - Press `Enter` to select
+- Press `Ctrl+D` to delete the selected session or window, then confirm
 - Press `Ctrl+R` to reload session data
 - Set `TMUX_ALL_THE_TIME_DISABLE=1` to bypass the hook for one shell
+
+## Update
+
+To update an existing installation, just rerun the installer:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/abdelelrafa/tmux-all-the-time/main/install.sh | bash
+```
+
+That will replace the installed binary in `~/.local/bin/tmux-all-the-time` and refresh the managed shell hook if needed.
 
 ## Build From Source
 
